@@ -64,7 +64,44 @@ Selection order: `--profile` flag > `PI_PROFILE` env > registry `defaultProfile`
 - `agents[<role>]` — keyed by `subagent_type`. A bare string is a model id
   resolved under the profile `provider`; use `{ "provider": "...", "model": "..." }`
   to cross providers.
+- `account` — optional. Names a saved AuthStorage credential
+  `<provider>.profile.<account>` to activate instead of the provider's default
+  credential (e.g. a second GitHub Copilot account). See below.
 - `defaultProfile` — applied when no profile is chosen.
+
+## Per-profile account (`account`)
+
+A profile can pin a specific saved credential instead of whatever is
+currently active for its `provider`:
+
+```json
+{
+  "work-copilot": {
+    "description": "GitHub Copilot — work account.",
+    "provider": "github-copilot",
+    "model": "gpt-5.6-sol",
+    "account": "work"
+  }
+}
+```
+
+On activation, this extension copies the credential saved at
+`github-copilot.profile.work` into the active `github-copilot` AuthStorage
+key and refreshes the model registry, before the session model is applied.
+
+The credential must be saved once, ahead of time, with
+[pi-copilot-account-switcher](https://github.com/ejklock/pi-copilot-account-switcher):
+
+```bash
+/copilot-profile login work   # or: /copilot-profile save-current work
+```
+
+If no credential is saved at the expected key, activation warns with that
+same command and leaves the active credential unchanged — it never throws
+and never writes tokens to `pi-profiles.json` or any log.
+
+A profile without `account` behaves exactly as before (no AuthStorage
+mutation).
 
 ## How sub-agent injection works
 

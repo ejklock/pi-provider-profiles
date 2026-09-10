@@ -17,6 +17,13 @@
  * `defaultProfile`. The `/profile` command lists profiles, shows the active
  * one, and switches the session model live (sub-agents follow the active
  * profile on their next spawn).
+ *
+ * A profile may also declare `account`, naming a saved AuthStorage credential
+ * `<provider>.profile.<account>` (e.g. a second GitHub Copilot login). On
+ * activation `applyAccount` copies that credential into the active
+ * `<provider>` key before the session model is applied — see
+ * pi-copilot-account-switcher, whose `login`/`use` subcommands save and
+ * restore those credentials.
  */
 
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -28,6 +35,60 @@ import {
 	resolveAgentModel,
 	resolveSessionModel,
 } from "./profiles.ts";
+
+/**
+ * Account switching — structural types mirroring AuthStorage, no concrete Pi
+ * import (pi-copilot-account-switcher, handleUseSubcommand).
+ */
+
+/** Opaque credential value stored in AuthStorage. */
+export type AuthCredential = Record<string, unknown>;
+
+/** Minimal structural slice of AuthStorage needed to switch the active credential. */
+export interface MinimalAuthStorage {
+	get(key: string): AuthCredential | undefined;
+	set(key: string, credential: AuthCredential): void;
+}
+
+/** Minimal structural slice of ModelRegistry needed by applyAccount. */
+export interface MinimalModelRegistry {
+	authStorage: MinimalAuthStorage;
+	refresh(): void;
+}
+
+/** Minimal structural context needed by applyAccount. */
+export interface AccountActivationContext {
+	ui: { notify(message: string, type?: "info" | "warning" | "error"): void };
+	modelRegistry: MinimalModelRegistry;
+}
+
+/** AuthStorage key for a profile's saved account credential. */
+function profileAccountAuthKey(provider: string, account: string): string {
+	return `${provider}.profile.${account}`;
+}
+
+/**
+ * Copy the saved `${provider}.profile.${account}` credential into the active
+ * `${provider}` AuthStorage key and refresh the model registry, so the
+ * session and every sub-agent authenticate as that account. A profile
+ * without `account` is a no-op. When no credential is saved at the expected
+ * key, warns with the one-time login command and leaves the active
+ * credential unchanged.
+ */
+export function applyAccount(ctx: AccountActivationContext, profile: Profile): void {
+	if (!profile.account) return;
+	const key = profileAccountAuthKey(profile.provider, profile.account);
+	const credential = ctx.modelRegistry.authStorage.get(key);
+	if (!credential) {
+		ctx.ui.notify(
+			`profile: no saved '${profile.provider}' credential for account '${profile.account}' (expected '${key}'). Run '/copilot-profile login ${profile.account}' once, then retry.`,
+			"warning",
+		);
+		return;
+	}
+	ctx.modelRegistry.authStorage.set(profile.provider, credential);
+	ctx.modelRegistry.refresh();
+}
 
 export default function (pi: ExtensionAPI) {
 	let registry: ProfileRegistry | null = null;
@@ -71,6 +132,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		activeName = name;
 		active = profile;
+		applyAccount(ctx as unknown as AccountActivationContext, profile);
 		await applySessionModel(ctx);
 		ctx.ui.setStatus("profile", `⦿ ${name}`);
 		return true;
