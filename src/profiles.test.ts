@@ -9,6 +9,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { loadRegistry, type Profile, resolveAgentModel, resolveSessionModel } from "./profiles.ts";
+import { applyAccount, type AccountActivationContext, type AuthCredential } from "./index.ts";
 
 const GPT: Profile = {
 	provider: "openai-codex",
@@ -70,4 +71,75 @@ test("loadRegistry lets a project file override a profile by name", () => {
 test("loadRegistry returns null when no registry exists", () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-empty-"));
 	assert.equal(loadRegistry(dir), null);
+});
+
+test("loadRegistry preserves an `account` field on a profile", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-account-"));
+	fs.writeFileSync(
+		path.join(dir, "pi-profiles.json"),
+		JSON.stringify({
+			defaultProfile: "work",
+			profiles: { work: { provider: "github-copilot", model: "gpt-5.6-sol", account: "work" } },
+		}),
+	);
+	const reg = loadRegistry(dir);
+	assert.equal(reg?.profiles.work.account, "work");
+});
+
+/** A structural AuthStorage mock: an in-memory credential map. */
+function fakeContext(store: Record<string, AuthCredential>): {
+	ctx: AccountActivationContext;
+	notifications: Array<{ message: string; type?: string }>;
+	refreshCount: () => number;
+} {
+	const notifications: Array<{ message: string; type?: string }> = [];
+	let refreshCount = 0;
+	const ctx: AccountActivationContext = {
+		ui: {
+			notify: (message: string, type?: "info" | "warning" | "error") => {
+				notifications.push({ message, type });
+			},
+		},
+		modelRegistry: {
+			authStorage: {
+				get: (key: string) => store[key],
+				set: (key: string, credential: AuthCredential) => {
+					store[key] = credential;
+				},
+			},
+			refresh: () => {
+				refreshCount += 1;
+			},
+		},
+	};
+	return { ctx, notifications, refreshCount: () => refreshCount };
+}
+
+const COPILOT_WORK: Profile = { provider: "github-copilot", model: "gpt-5.6-sol", account: "work" };
+const COPILOT_DEFAULT: Profile = { provider: "github-copilot", model: "gpt-5.6-sol" };
+
+test("applyAccount copies the saved credential into the active key and refreshes", () => {
+	const credential = { token: "opaque" };
+	const { ctx, refreshCount } = fakeContext({ "github-copilot.profile.work": credential });
+	applyAccount(ctx, COPILOT_WORK);
+	assert.equal(ctx.modelRegistry.authStorage.get("github-copilot"), credential);
+	assert.equal(refreshCount(), 1);
+});
+
+test("applyAccount warns with the login command and leaves the active credential unchanged when no credential is saved", () => {
+	const { ctx, notifications, refreshCount } = fakeContext({});
+	applyAccount(ctx, COPILOT_WORK);
+	assert.equal(ctx.modelRegistry.authStorage.get("github-copilot"), undefined);
+	assert.equal(refreshCount(), 0);
+	assert.equal(notifications.length, 1);
+	assert.equal(notifications[0]?.type, "warning");
+	assert.match(notifications[0]?.message ?? "", /\/copilot-profile login work/);
+});
+
+test("applyAccount is a no-op when the profile does not declare `account`", () => {
+	const { ctx, notifications, refreshCount } = fakeContext({ "github-copilot.profile.work": { token: "x" } });
+	applyAccount(ctx, COPILOT_DEFAULT);
+	assert.equal(ctx.modelRegistry.authStorage.get("github-copilot"), undefined);
+	assert.equal(refreshCount(), 0);
+	assert.equal(notifications.length, 0);
 });

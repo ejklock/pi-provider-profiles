@@ -27,6 +27,13 @@ export interface Profile {
 	model: string;
 	/** Per-role sub-agent model pins, keyed by `subagent_type`. */
 	agents?: Record<string, AgentPin>;
+	/**
+	 * Names a saved AuthStorage credential `<provider>.profile.<account>`. When
+	 * set, activation copies that credential into the active `<provider>` key
+	 * before the session model is applied — selecting a second account (e.g. a
+	 * different GitHub Copilot login) for this profile.
+	 */
+	account?: string;
 }
 
 export interface ProfileRegistry {
