@@ -12,6 +12,7 @@ import { loadRegistry, type Profile, resolveAgentModel, resolveSessionModel } fr
 import {
 	applyAccount,
 	applyAgentModel,
+	shouldApplySessionProfile,
 	type AccountActivationContext,
 	type AuthCredential,
 } from "./index.ts";
@@ -68,6 +69,28 @@ test("applyAgentModel leaves an unpinned role unchanged", () => {
 
 	assert.equal(applyAgentModel(GPT, input), undefined);
 	assert.equal(input.model, "anthropic/claude-opus-4-8");
+});
+
+test("shouldApplySessionProfile preserves a different model when the default profile is implicit", () => {
+	const defaultProfile: Profile = { provider: "anthropic", model: "claude-opus-4-8" };
+	assert.equal(
+		shouldApplySessionProfile(defaultProfile, false, {
+			provider: "openai-codex",
+			id: "gpt-5.6-luna",
+		}),
+		false,
+	);
+});
+
+test("shouldApplySessionProfile honours an explicitly selected profile", () => {
+	const defaultProfile: Profile = { provider: "anthropic", model: "claude-opus-4-8" };
+	assert.equal(
+		shouldApplySessionProfile(defaultProfile, true, {
+			provider: "openai-codex",
+			id: "gpt-5.6-luna",
+		}),
+		true,
+	);
 });
 
 test("loadRegistry reads the agent-dir file and picks the default profile", () => {

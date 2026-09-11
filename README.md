@@ -25,6 +25,9 @@ project-local `<cwd>/.pi/pi-profiles.json` overrides it per profile name.
   profile on their next spawn.
 
 Selection order: `--profile` flag > `PI_PROFILE` env > registry `defaultProfile`.
+An explicit profile always applies. The implicit registry default does not
+replace a different model already selected for a child or explicitly configured
+session.
 
 ## Registry — `pi-profiles.json`
 
@@ -128,6 +131,9 @@ models. The profile status also shows the role and model applied to the latest
   dispatch path.
 - `/profile <name>` mid-session re-points the **session** model immediately;
   already-running sub-agents keep the model they started with.
+- Sub-agent sessions reload normal extensions. Their assigned role model differs
+  from the registry's session default, so implicit default activation leaves that
+  model unchanged.
 
 ## Develop
 
