@@ -14,9 +14,10 @@
  * honoured. A profile pin replaces a caller-supplied model for the same role.
  *
  * Selection order: `--profile <name>` flag > `PI_PROFILE` env > registry
- * `defaultProfile`. The `/profile` command lists profiles, shows the active
- * one, and switches the session model live (sub-agents follow the active
- * profile on their next spawn).
+ * `defaultProfile`. An implicit default does not replace a different model
+ * already selected for a child or explicitly configured session. The `/profile`
+ * command lists profiles, shows the active one, and switches the session model
+ * live (sub-agents follow the active profile on their next spawn).
  *
  * A profile may also declare `account`, naming a saved AuthStorage credential
  * `<provider>.profile.<account>` (e.g. a second GitHub Copilot login). On
@@ -86,6 +87,24 @@ export function applyAgentModel(
 	};
 }
 
+/**
+ * Decide whether session startup can apply a profile without replacing a selected model.
+ *
+ * @param profile - The candidate session profile.
+ * @param explicitlySelected - Whether a flag or environment value selected the profile.
+ * @param currentModel - The model already selected for the session.
+ * @returns `true` when the profile can set the session model.
+ */
+export function shouldApplySessionProfile(
+	profile: Profile,
+	explicitlySelected: boolean,
+	currentModel: { provider: string; id: string } | undefined,
+): boolean {
+	return explicitlySelected
+		|| currentModel === undefined
+		|| (currentModel.provider === profile.provider && currentModel.id === profile.model);
+}
+
 /** AuthStorage key for a profile's saved account credential. */
 function profileAccountAuthKey(provider: string, account: string): string {
 	return `${provider}.profile.${account}`;
@@ -125,13 +144,16 @@ export default function (pi: ExtensionAPI) {
 
 	const names = (): string[] => Object.keys(registry?.profiles ?? {});
 
-	/** Selected profile name: --profile flag > PI_PROFILE env > registry default. */
-	const selectedName = (): string => {
+	/** Explicit profile name: --profile flag > PI_PROFILE env. */
+	const explicitSelectedName = (): string => {
 		const flag = pi.getFlag("profile");
 		const fromFlag = typeof flag === "string" ? flag.trim() : "";
 		const fromEnv = (process.env.PI_PROFILE ?? "").trim();
-		return fromFlag || fromEnv || registry?.defaultProfile || "";
+		return fromFlag || fromEnv;
 	};
+
+	/** Selected profile name: explicit selection > registry default. */
+	const selectedName = (): string => explicitSelectedName() || registry?.defaultProfile || "";
 
 	const applySessionModel = async (ctx: ExtensionContext): Promise<void> => {
 		if (!active) return;
@@ -170,8 +192,11 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		reload(ctx.cwd);
 		if (!registry) return;
+		const explicitName = explicitSelectedName();
 		const name = selectedName();
-		if (name) await activate(ctx, name);
+		const profile = registry.profiles[name];
+		if (!name || !profile || !shouldApplySessionProfile(profile, Boolean(explicitName), ctx.model)) return;
+		await activate(ctx, name);
 	});
 
 	// Apply the profile pin at dispatch so a caller cannot drift to another model.

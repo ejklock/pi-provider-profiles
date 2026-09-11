@@ -1,6 +1,6 @@
 {
   "name": "pi-provider-profiles",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Native pi profiles, one per provider. A profile from pi-profiles.json sets the session (main-loop) model and injects each sub-agent's per-role model at Agent dispatch — the in-process, native counterpart to the Docker pi variants (no agent-home overlay, no launcher env). Select with `pi --profile <name>`, the `/profile <name>` command, or a `pi profile <name>` shell wrapper.",
   "license": "MIT",
   "type": "module",
