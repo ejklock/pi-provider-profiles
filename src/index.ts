@@ -10,8 +10,8 @@
  * as `frontmatter model ?? caller-supplied model ?? parent(session) model`
  * (@tintinweb/pi-subagents, invocation-config.ts). Native pi agents therefore
  * carry NO `model:` frontmatter (models live in `pi-profiles.json` instead), so
- * the `model` this extension writes into the `Agent` tool call is honoured. An
- * explicit `model` the orchestrator already set is never overwritten.
+ * the authoritative `model` this extension writes into the `Agent` tool call is
+ * honoured. A profile pin replaces a caller-supplied model for the same role.
  *
  * Selection order: `--profile <name>` flag > `PI_PROFILE` env > registry
  * `defaultProfile`. The `/profile` command lists profiles, shows the active
@@ -60,6 +60,30 @@ export interface MinimalModelRegistry {
 export interface AccountActivationContext {
 	ui: { notify(message: string, type?: "info" | "warning" | "error"): void };
 	modelRegistry: MinimalModelRegistry;
+}
+
+/**
+ * Apply the active profile's authoritative model to an Agent tool input.
+ *
+ * @param profile - The active profile.
+ * @param input - The mutable Agent tool input.
+ * @returns The applied role and model, plus a replaced caller model when present.
+ */
+export function applyAgentModel(
+	profile: Profile,
+	input: Record<string, unknown>,
+): { role: string; model: string; replacedModel?: string } | undefined {
+	const role = typeof input.subagent_type === "string" ? input.subagent_type.trim() : "";
+	if (!role) return undefined;
+	const model = resolveAgentModel(profile, role);
+	if (!model) return undefined;
+	const currentModel = typeof input.model === "string" ? input.model.trim() : "";
+	input.model = model;
+	return {
+		role,
+		model,
+		...(currentModel && currentModel !== model ? { replacedModel: currentModel } : {}),
+	};
 }
 
 /** AuthStorage key for a profile's saved account credential. */
@@ -150,16 +174,18 @@ export default function (pi: ExtensionAPI) {
 		if (name) await activate(ctx, name);
 	});
 
-	// Inject the per-role sub-agent model at dispatch. Only when a profile is
-	// active, the role is pinned, and the caller did not already choose a model.
-	pi.on("tool_call", (event) => {
+	// Apply the profile pin at dispatch so a caller cannot drift to another model.
+	pi.on("tool_call", (event, ctx) => {
 		if (event.toolName !== "Agent" || !active) return;
-		const input = event.input as Record<string, unknown>;
-		if (typeof input.model === "string" && input.model.trim()) return;
-		const role = typeof input.subagent_type === "string" ? input.subagent_type : "";
-		if (!role) return;
-		const pin = resolveAgentModel(active, role);
-		if (pin) input.model = pin;
+		const applied = applyAgentModel(active, event.input as Record<string, unknown>);
+		if (!applied) return;
+		ctx.ui.setStatus("profile", `⦿ ${activeName} · ${applied.role}: ${applied.model}`);
+		if (applied.replacedModel) {
+			ctx.ui.notify(
+				`profile '${activeName}': ${applied.role} model ${applied.replacedModel} → ${applied.model}`,
+				"info",
+			);
+		}
 	});
 
 	pi.registerCommand("profile", {

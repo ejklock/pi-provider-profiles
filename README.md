@@ -110,13 +110,19 @@ The `Agent` tool resolves a spawn's model as
 (`@tintinweb/pi-subagents`, `invocation-config.ts`). So your pi agents must
 carry **no `model:` frontmatter** — the models live in `pi-profiles.json`
 instead — and this extension writes the per-role `model` into each `Agent` tool
-call, where it is honoured. An explicit `model` the orchestrator already set is
-never overwritten.
+call, where it is honoured. A profile pin is authoritative: it replaces an
+explicit `model` supplied by the orchestrator for the same role. When that
+happens, the extension shows an informational notification with the old and new
+models. The profile status also shows the role and model applied to the latest
+`Agent` dispatch.
 
 ## Caveats
 
 - The models are owned by this extension. If it fails to load, sub-agents fall
   back to the **session model** (silent degradation), not their per-role model.
+- Agent-file `model:` frontmatter still outranks tool-call input inside
+  `@tintinweb/pi-subagents`. Native agents must not declare that field; the
+  extension cannot replace a frontmatter pin.
 - Sub-agents spawned by `/workflows` or nested spawns may inherit the session
   model rather than the per-role pin — the injection covers the standard `Agent`
   dispatch path.

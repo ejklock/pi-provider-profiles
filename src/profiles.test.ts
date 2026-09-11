@@ -9,7 +9,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { loadRegistry, type Profile, resolveAgentModel, resolveSessionModel } from "./profiles.ts";
-import { applyAccount, type AccountActivationContext, type AuthCredential } from "./index.ts";
+import {
+	applyAccount,
+	applyAgentModel,
+	type AccountActivationContext,
+	type AuthCredential,
+} from "./index.ts";
 
 const GPT: Profile = {
 	provider: "openai-codex",
@@ -37,6 +42,32 @@ test("resolveAgentModel honours a cross-provider object pin", () => {
 test("resolveAgentModel returns undefined for an unpinned or blank role", () => {
 	assert.equal(resolveAgentModel(GPT, "explorer"), undefined);
 	assert.equal(resolveAgentModel(GPT, "blank"), undefined);
+});
+
+test("applyAgentModel replaces a caller model with the active profile pin", () => {
+	const input: Record<string, unknown> = {
+		subagent_type: "coder",
+		model: "anthropic/claude-opus-4-8",
+	};
+
+	const applied = applyAgentModel(GPT, input);
+
+	assert.deepEqual(applied, {
+		role: "coder",
+		model: "openai-codex/gpt-5.6-terra",
+		replacedModel: "anthropic/claude-opus-4-8",
+	});
+	assert.equal(input.model, "openai-codex/gpt-5.6-terra");
+});
+
+test("applyAgentModel leaves an unpinned role unchanged", () => {
+	const input: Record<string, unknown> = {
+		subagent_type: "explorer",
+		model: "anthropic/claude-opus-4-8",
+	};
+
+	assert.equal(applyAgentModel(GPT, input), undefined);
+	assert.equal(input.model, "anthropic/claude-opus-4-8");
 });
 
 test("loadRegistry reads the agent-dir file and picks the default profile", () => {
