@@ -18,6 +18,8 @@ project-local `<cwd>/.pi/pi-profiles.json` overrides it per profile name.
 ## Invocation
 
 - `pi --profile gpt` — native CLI flag (registered by this extension).
+- `pi --profile gpt --front coder` — start the session as a front bound to a
+  role's pinned model (see below).
 - `pi profile gpt` — a thin shell wrapper mapping to `--profile` (optional; e.g.
   installed by your dotfiles / installer).
 - `/profile` — in a running session: list profiles + show the active one.
@@ -28,6 +30,22 @@ Selection order: `--profile` flag > `PI_PROFILE` env > registry `defaultProfile`
 An explicit profile always applies. The implicit registry default does not
 replace a different model already selected for a child or explicitly configured
 session.
+
+## Fronts — `--front <role>`
+
+A front is a session doing one role's work: `pi --profile gpt --front coder`
+starts the session bound to the model pinned at `agents.coder` (the same
+resolution the `Agent` dispatch uses — a bare id under the profile `provider`,
+or a cross-provider object pin) instead of the profile session model.
+
+The host applies a CLI `--model` before `session_start`; the front binding runs
+after it and wins, so a launch model never survives a front. `--front` also
+counts as an explicit selection: it applies the selected (or registry default)
+profile even when a different model was already configured.
+
+An unknown role, a blank pin, or a profile without `agents` warns, names the
+roles the profile does pin, and keeps the profile session model. A pin missing
+from the catalog or a provider without configured auth warns the same way.
 
 ## Registry — `pi-profiles.json`
 
