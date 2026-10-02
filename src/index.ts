@@ -19,6 +19,13 @@
  * command lists profiles, shows the active one, and switches the session model
  * live (sub-agents follow the active profile on their next spawn).
  *
+ * Fronts: `--front <role>` starts the session as a front — at `session_start`
+ * the extension binds the model pinned at the selected profile's
+ * `agents[<role>]` (the same resolution the `Agent` dispatch uses) as the session
+ * model, over whatever the host bound earlier (a CLI `--model` never survives
+ * a front). An unknown or unpinned role warns and keeps the profile session
+ * model; `--front` also counts as an explicit selection.
+ *
  * A profile may also declare `account`, naming a saved AuthStorage credential
  * `<provider>.profile.<account>` (e.g. a second GitHub Copilot login). On
  * activation `applyAccount` copies that credential into the active
@@ -152,6 +159,12 @@ export default function (pi: ExtensionAPI) {
 		return fromFlag || fromEnv;
 	};
 
+	/** Front role from the --front flag, empty when absent. */
+	const frontSelectedRole = (): string => {
+		const flag = pi.getFlag("front");
+		return typeof flag === "string" ? flag.trim() : "";
+	};
+
 	/** Selected profile name: explicit selection > registry default. */
 	const selectedName = (): string => explicitSelectedName() || registry?.defaultProfile || "";
 
@@ -184,19 +197,63 @@ export default function (pi: ExtensionAPI) {
 		return true;
 	};
 
+	/**
+	 * Bind the front role's pin as the session model, layered after the profile
+	 * session model so a failed front binding falls back to it.
+	 */
+	const applyFrontModel = async (ctx: ExtensionContext, profile: Profile, role: string): Promise<void> => {
+		const model = resolveAgentModel(profile, role);
+		if (!model) {
+			const pinned = Object.keys(profile.agents ?? {}).filter((r) => resolveAgentModel(profile, r));
+			ctx.ui.notify(
+				`profile '${activeName}': front role '${role}' is not pinned (pinned roles: ${pinned.join(", ") || "none"})`,
+				"warning",
+			);
+			return;
+		}
+		const slash = model.indexOf("/");
+		const provider = model.slice(0, slash);
+		const modelId = model.slice(slash + 1);
+		const resolved = ctx.modelRegistry.find(provider, modelId);
+		if (!resolved) {
+			ctx.ui.notify(
+				`profile '${activeName}': front model ${model} for role '${role}' is not in the catalog`,
+				"warning",
+			);
+			return;
+		}
+		const ok = await pi.setModel(resolved);
+		if (!ok) {
+			ctx.ui.notify(
+				`profile '${activeName}': provider '${provider}' has no configured auth — front model unchanged`,
+				"warning",
+			);
+			return;
+		}
+		ctx.ui.setStatus("profile", `⦿ ${activeName} · front ${role}`);
+	};
+
 	pi.registerFlag("profile", {
 		type: "string",
 		description: "Activate a pi profile from pi-profiles.json (sets the session + sub-agent models).",
 	});
 
+	pi.registerFlag("front", {
+		type: "string",
+		description: "Start the session as a front bound to a profile role's pinned model (agents.<role> in pi-profiles.json).",
+	});
+
 	pi.on("session_start", async (_event, ctx) => {
 		reload(ctx.cwd);
 		if (!registry) return;
+		const frontRole = frontSelectedRole();
 		const explicitName = explicitSelectedName();
 		const name = selectedName();
 		const profile = registry.profiles[name];
-		if (!name || !profile || !shouldApplySessionProfile(profile, Boolean(explicitName), ctx.model)) return;
+		if (!name || !profile) return;
+		if (!shouldApplySessionProfile(profile, Boolean(explicitName || frontRole), ctx.model)) return;
 		await activate(ctx, name);
+		if (frontRole) await applyFrontModel(ctx, profile, frontRole);
 	});
 
 	// Apply the profile pin at dispatch so a caller cannot drift to another model.

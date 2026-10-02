@@ -9,7 +9,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { loadRegistry, type Profile, resolveAgentModel, resolveSessionModel } from "./profiles.ts";
-import {
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import extension, {
 	applyAccount,
 	applyAgentModel,
 	shouldApplySessionProfile,
@@ -196,4 +197,187 @@ test("applyAccount is a no-op when the profile does not declare `account`", () =
 	assert.equal(ctx.modelRegistry.authStorage.get("github-copilot"), undefined);
 	assert.equal(refreshCount(), 0);
 	assert.equal(notifications.length, 0);
+});
+
+const FRONT_REGISTRY: { defaultProfile: string; profiles: Record<string, Profile> } = {
+	defaultProfile: "go",
+	profiles: {
+		go: {
+			provider: "anthropic",
+			model: "claude-opus-4-8",
+			agents: { coder: "claude-haiku-4-5", blank: "" },
+		},
+		"gpt-local": {
+			provider: "openai-codex",
+			model: "gpt-5.6-sol",
+			agents: { coder: { provider: "llamaswap", model: "Qwen3-VL-8B" } },
+		},
+		bare: { provider: "anthropic", model: "claude-sonnet-4-5" },
+	},
+};
+
+interface FrontSessionOptions {
+	currentModel?: { provider: string; id: string };
+	setModelOk?: boolean;
+	find?: (provider: string, modelId: string) => { provider: string; modelId: string } | undefined;
+}
+
+/**
+ * Drive the extension's session_start handler against a stubbed host, with the
+ * fixture registry as a project-local override in a temporary cwd. The stubbed
+ * modelRegistry hands out a per-pair object, so every setModel receipt
+ * identifies the provider/model the extension resolved.
+ */
+async function startFrontSession(
+	flags: Record<string, string>,
+	options: FrontSessionOptions = {},
+): Promise<{
+	setModelCalls: unknown[];
+	notifications: Array<{ message: string; type?: string }>;
+	statuses: Array<[string, string | undefined]>;
+}> {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-front-"));
+	fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+	fs.writeFileSync(path.join(cwd, ".pi", "pi-profiles.json"), JSON.stringify(FRONT_REGISTRY));
+
+	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void> | void>();
+	const setModelCalls: unknown[] = [];
+	const notifications: Array<{ message: string; type?: string }> = [];
+	const statuses: Array<[string, string | undefined]> = [];
+
+	const piStub = {
+		getFlag: (name: string) => flags[name],
+		registerFlag: () => {},
+		on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void> | void) => {
+			handlers.set(event, handler);
+			return () => {};
+		},
+		registerCommand: () => {},
+		setModel: async (model: unknown) => {
+			setModelCalls.push(model);
+			return options.setModelOk ?? true;
+		},
+	} as unknown as ExtensionAPI;
+
+	extension(piStub);
+
+	const ctxStub = {
+		cwd,
+		model: options.currentModel,
+		ui: {
+			notify: (message: string, type?: "info" | "warning" | "error") => {
+				notifications.push({ message, type });
+			},
+			setStatus: (key: string, text: string | undefined) => {
+				statuses.push([key, text]);
+			},
+		},
+		modelRegistry: {
+			find: (provider: string, modelId: string) =>
+				options.find ? options.find(provider, modelId) : { provider, modelId },
+		},
+	} as unknown as ExtensionContext;
+
+	const handler = handlers.get("session_start");
+	assert.ok(handler, "the extension registered a session_start handler");
+	const previousProfile = process.env.PI_PROFILE;
+	process.env.PI_PROFILE = "";
+	try {
+		await handler({ type: "session_start", reason: "startup" }, ctxStub);
+	} finally {
+		if (previousProfile === undefined) delete process.env.PI_PROFILE;
+		else process.env.PI_PROFILE = previousProfile;
+	}
+	return { setModelCalls, notifications, statuses };
+}
+
+/** The first warning the session produced, asserted to exist. */
+function theWarning(notifications: Array<{ message: string; type?: string }>): string {
+	const warn = notifications.find((n) => n.type === "warning");
+	assert.ok(warn, `expected a warning, got: ${JSON.stringify(notifications)}`);
+	return warn?.message ?? "";
+}
+
+test("a front launch binds the profile's pinned model for the role at session_start", async () => {
+	const { setModelCalls, statuses } = await startFrontSession({ profile: "go", front: "coder" });
+
+	assert.equal(setModelCalls.length, 2);
+	assert.deepEqual(setModelCalls[0], { provider: "anthropic", modelId: "claude-opus-4-8" });
+	assert.deepEqual(setModelCalls.at(-1), { provider: "anthropic", modelId: "claude-haiku-4-5" });
+	assert.deepEqual(statuses.at(-1), ["profile", "⦿ go · front coder"]);
+});
+
+test("an unknown front role keeps the session model and names the roles the profile pins", async () => {
+	const { setModelCalls, notifications } = await startFrontSession({ profile: "go", front: "architect" });
+
+	assert.equal(setModelCalls.length, 1);
+	assert.deepEqual(setModelCalls.at(-1), { provider: "anthropic", modelId: "claude-opus-4-8" });
+	assert.match(theWarning(notifications), /front role 'architect' is not pinned/);
+	assert.match(theWarning(notifications), /coder/);
+});
+
+test("a front launch on a profile without agent pins keeps the session model and reports none", async () => {
+	const { setModelCalls, notifications } = await startFrontSession({ profile: "bare", front: "coder" });
+
+	assert.equal(setModelCalls.length, 1);
+	assert.deepEqual(setModelCalls.at(-1), { provider: "anthropic", modelId: "claude-sonnet-4-5" });
+	assert.match(theWarning(notifications), /front role 'coder' is not pinned/);
+	assert.match(theWarning(notifications), /none/);
+});
+
+test("a front role pinned as a cross-provider object binds the overriding provider", async () => {
+	const { setModelCalls } = await startFrontSession({ profile: "gpt-local", front: "coder" });
+
+	assert.equal(setModelCalls.length, 2);
+	assert.deepEqual(setModelCalls.at(-1), { provider: "llamaswap", modelId: "Qwen3-VL-8B" });
+});
+
+test("a front launch without a profile flag still binds the role pin over a host-selected model", async () => {
+	const { setModelCalls } = await startFrontSession(
+		{ front: "coder" },
+		{ currentModel: { provider: "openai-codex", id: "gpt-5.6-luna" } },
+	);
+
+	assert.deepEqual(setModelCalls.at(-1), { provider: "anthropic", modelId: "claude-haiku-4-5" });
+});
+
+test("without a front flag the session binding is unchanged", async () => {
+	const { setModelCalls, notifications, statuses } = await startFrontSession({ profile: "go" });
+
+	assert.equal(setModelCalls.length, 1);
+	assert.deepEqual(setModelCalls.at(-1), { provider: "anthropic", modelId: "claude-opus-4-8" });
+	assert.equal(notifications.length, 0);
+	assert.deepEqual(statuses.at(-1), ["profile", "⦿ go"]);
+});
+
+test("a blank agent pin is unpinned for a front launch", async () => {
+	const { setModelCalls, notifications } = await startFrontSession({ profile: "go", front: "blank" });
+
+	assert.equal(setModelCalls.length, 1);
+	assert.match(theWarning(notifications), /front role 'blank' is not pinned/);
+	assert.match(theWarning(notifications), /pinned roles: coder/);
+});
+
+test("a front pin missing from the catalog warns and keeps the session model", async () => {
+	const { setModelCalls, notifications } = await startFrontSession(
+		{ profile: "go", front: "coder" },
+		{ find: (provider, modelId) => (modelId === "claude-haiku-4-5" ? undefined : { provider, modelId }) },
+	);
+
+	assert.equal(setModelCalls.length, 1);
+	assert.deepEqual(setModelCalls.at(-1), { provider: "anthropic", modelId: "claude-opus-4-8" });
+	assert.match(theWarning(notifications), /front model anthropic\/claude-haiku-4-5 .*is not in the catalog/);
+});
+
+test("a front pin whose provider has no configured auth warns and keeps the session model", async () => {
+	const { setModelCalls, notifications } = await startFrontSession(
+		{ profile: "go", front: "coder" },
+		{ setModelOk: false },
+	);
+
+	assert.deepEqual(setModelCalls.at(-1), { provider: "anthropic", modelId: "claude-haiku-4-5" });
+	assert.ok(
+		notifications.some((n) => n.type === "warning" && /no configured auth.*front model unchanged/.test(n.message)),
+		`expected a front no-auth warning, got: ${JSON.stringify(notifications)}`,
+	);
 });
